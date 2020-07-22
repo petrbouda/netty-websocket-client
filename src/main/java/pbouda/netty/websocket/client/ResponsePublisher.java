@@ -140,6 +140,15 @@ public class ResponsePublisher implements Publisher<InboundMessage>, EvictableMa
 
         @Override
         public void request(long n) {
+            // Check if RealSubscriber is not slower then websocket processing.
+            // If `false`
+            // - a message has arrived (MARKER set)
+            // - there can be a tiny race-condition between
+            // (!SUBSCRIBER.compareAndSet(this, null, realSubscriber))
+            // and
+            // (SUBSCRIBER.compareAndSet(this, null, MARKER))
+            // until the incoming message is set. Therefore, we need to spin on
+            // the volatile value to wait and ensure visibility.
             if (!SUBSCRIBER.compareAndSet(this, null, realSubscriber)) {
                 while (inboundMessage == null) {
                     Thread.onSpinWait();
@@ -155,9 +164,14 @@ public class ResponsePublisher implements Publisher<InboundMessage>, EvictableMa
         }
 
         public void signal(InboundMessage message) {
+            // Has a RealSubscriber been already registered or
+            // message arrived ever before the subscriber called
+            // `request(1)`.
             if (SUBSCRIBER.compareAndSet(this, null, MARKER)) {
                 this.inboundMessage = message;
             } else {
+                // RealSubscriber has been already registered and we
+                // fetch him and call onNext method on the `websocket thread`
                 @SuppressWarnings("unchecked")
                 Subscriber<InboundMessage> subscriber = (Subscriber<InboundMessage>) SUBSCRIBER.get(this);
                 sendSignal(subscriber, message);
